@@ -1,8 +1,8 @@
 component mpg_p2s;
 option userspace;
 
-pin out bit estop-activate;
-pin out bit estop-reset;
+pin out bit estop-activate = 0;
+pin out bit estop-reset = 0;
 pin in bit estop-is-activated;
 
 pin out bit machine-on;
@@ -21,9 +21,9 @@ pin in float y-cmd-pos;
 pin in float z-cmd-pos;
 
 pin out float zero-offset;
-pin out bit zero-x-axis;
-pin out bit zero-y-axis;
-pin out bit zero-z-axis;
+pin out bit zero-x-axis = 0;
+pin out bit zero-y-axis = 0;
+pin out bit zero-z-axis = 0;
 
 license "GPL"; // indicates GPL v2 or later
 ;;
@@ -39,8 +39,10 @@ void hal_estop_activate() {
 
 void hal_estop_reset() {
     FOR_ALL_INSTS() {
-        estop_activate = 0;
-        estop_reset = 1;
+        if(estop_activate != 0) {
+            estop_activate = 0;
+            estop_reset = 1;
+        }
     }
 }
 
@@ -142,7 +144,6 @@ void update();
 void deinit();
 
 void user_mainloop(void) {
-    printf("user_mainloop()\n");
     init();
 
     while(1) {

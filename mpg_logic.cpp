@@ -1,5 +1,8 @@
 #include <array>
+#include <fstream>
+#include <vector>
 
+#include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <cstdint>
@@ -7,6 +10,8 @@
 #include <unistd.h>
 
 #include <libusb-1.0/libusb.h>
+#include <linuxcnc/emc.hh>
+#include <linuxcnc/emc_nml.hh>
 
 extern "C" {
     void hal_estop_activate();
@@ -110,6 +115,8 @@ struct MPGLogic {
     std::array<char, 20> screen;
     std::uint8_t screen_seq;
     char str[9];
+    int coord_sys;
+    const char *coord_systems[10] = {"G53 0", "G54 1", "G55 2", "G56 3", "G57 4", "G58 5", "G59 6", "G59.1 7", "G59.2 8", "G59.3 9"};
 
     char getAxis() {
         switch(axis) {
@@ -124,16 +131,13 @@ struct MPGLogic {
         return 0;
     }
 
-    float &axisOffset(Axis axis) {
-        return offsets[(std::size_t)axis];
-    }
-
-    void update(std::array<std::uint8_t, 8> &data) {
+    void update(std::array<std::uint8_t, 8> &data, int coord_sys) {
         mpgState.update(data);
         float step_size = (mpgState.button == MPGState::Button::RELEASED) ? 0.001f : 0.01f;
         axis = Axis::NONE;
         Axis enable_axis = Axis::NONE;
         Axis zero_axis = Axis::NONE;
+        bool on = true;
 
         screen.fill(' ');
         screen[17] = screen_seq++;
@@ -159,12 +163,14 @@ struct MPGLogic {
         }
 
         if(hal_estop_is_activated()) {
+            on = false;
             axis = Axis::NONE;
             const char *estop = "E-Stop  Active";
             std::memcpy(screen.data(), estop, std::strlen(estop));
         }
 
         if(!hal_machine_is_on() && !hal_estop_is_activated()) {
+            on = false;
             axis = Axis::NONE;
             const char *off = "Machine Off";
             std::memcpy(screen.data(), off, std::strlen(off));
@@ -187,6 +193,18 @@ struct MPGLogic {
 
                 int size = snprintf(str, sizeof(str), "%+7.03f", offsets[(std::size_t)axis]);
                 std::memcpy(screen.data() + 9, str, size);
+            }
+        }
+
+        if(coord_sys != 0) {
+            MPGLogic::coord_sys = coord_sys;
+        }
+
+        if(on) {
+            if(mpgState.left_dial == MPGState::LeftDial::ZERO) {
+                screen[8] = '0' + MPGLogic::coord_sys;
+            } else {
+                std::memcpy(screen.data() + 8, coord_systems[MPGLogic::coord_sys], strlen(coord_systems[MPGLogic::coord_sys]));
             }
         }
 
@@ -214,12 +232,24 @@ extern "C" {
     }
 }
 
+const char *nmlfile = "/usr/share/linuxcnc/linuxcnc.nml";
+RCS_STAT_CHANNEL *stat = new RCS_STAT_CHANNEL(emcFormat, "emcStatus", "xemc", nmlfile);
+
 extern "C" {
     void update() {
+        int coord_sys = 0;
+
+        if(stat->valid()) {
+            if(stat->peek() == EMC_STAT_TYPE) {
+                EMC_STAT *emcStatus = static_cast<EMC_STAT*>(stat->get_address());
+                coord_sys = emcStatus->task.g5x_index;
+            }
+        }
+
         std::array<std::uint8_t, 8> buf;
         int actual;
         libusb_interrupt_transfer(handle, 0x81, buf.data(), buf.size(), &actual, 0);
-        mpgLogic.update(buf);
+        mpgLogic.update(buf, coord_sys);
         libusb_interrupt_transfer(handle, 0x01, (unsigned char *)mpgLogic.screen.data(), mpgLogic.screen.size(), &actual, 0);
     }
 }

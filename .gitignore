@@ -1,3 +1,4 @@
 *.o
 mpg_p2s.c
 mpg_p2s
+.vscode
