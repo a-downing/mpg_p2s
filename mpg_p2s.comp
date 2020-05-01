@@ -1,0 +1,152 @@
+component mpg_p2s;
+option userspace;
+
+pin out bit estop-activate;
+pin out bit estop-reset;
+pin in bit estop-is-activated;
+
+pin out bit machine-on;
+pin out bit machine-off;
+pin in bit machine-is-on;
+
+pin out bit x-jog-enable;
+pin out bit y-jog-enable;
+pin out bit z-jog-enable;
+
+pin out s32 jog-counts;
+pin out float jog-scale;
+
+pin in float x-cmd-pos;
+pin in float y-cmd-pos;
+pin in float z-cmd-pos;
+
+pin out float zero-offset;
+pin out bit zero-x-axis;
+pin out bit zero-y-axis;
+pin out bit zero-z-axis;
+
+license "GPL"; // indicates GPL v2 or later
+;;
+#include <unistd.h>
+#include <stdio.h>
+
+void hal_estop_activate() {
+    FOR_ALL_INSTS() {
+        estop_activate = 1;
+        estop_reset = 0;
+    }
+}
+
+void hal_estop_reset() {
+    FOR_ALL_INSTS() {
+        estop_activate = 0;
+        estop_reset = 1;
+    }
+}
+
+int hal_estop_is_activated() {
+    FOR_ALL_INSTS() {
+        return estop_is_activated;
+    }
+}
+
+int hal_machine_is_on() {
+    FOR_ALL_INSTS() {
+        return machine_is_on;
+    }
+}
+
+void hal_zero_offset(float f) {
+    FOR_ALL_INSTS() zero_offset = f;
+}
+
+void hal_zero_axis(int i) {
+    FOR_ALL_INSTS() {
+        switch(i) {
+        case 1:
+            zero_x_axis = 1;
+            zero_y_axis = 0;
+            zero_z_axis = 0;
+            break;
+        case 2:
+            zero_x_axis = 0;
+            zero_y_axis = 1;
+            zero_z_axis = 0;
+            break;
+        case 3:
+            zero_x_axis = 0;
+            zero_y_axis = 0;
+            zero_z_axis = 1;
+            break;
+        default:
+            zero_x_axis = 0;
+            zero_y_axis = 0;
+            zero_z_axis = 0;
+            break;
+        }
+    }
+}
+
+float hal_axis_cmd_pos(unsigned int i) {
+    FOR_ALL_INSTS() {
+        switch(i) {
+        case 1:
+            return x_cmd_pos;
+        case 2:
+            return y_cmd_pos;
+        case 3:
+            return z_cmd_pos;
+        default:
+            return 0.0f;
+        }
+    }
+}
+
+void hal_jog_counts(float f) {
+    FOR_ALL_INSTS() jog_counts = f;
+}
+
+void hal_jog_scale(float f) {
+    FOR_ALL_INSTS() jog_scale = f;
+}
+
+void hal_jog_enable_axis(int i) {
+    FOR_ALL_INSTS() {
+        switch(i) {
+        case 1:
+            x_jog_enable = 1;
+            y_jog_enable = 0;
+            z_jog_enable = 0;
+            break;
+        case 2:
+            x_jog_enable = 0;
+            y_jog_enable = 1;
+            z_jog_enable = 0;
+            break;
+        case 3:
+            x_jog_enable = 0;
+            y_jog_enable = 0;
+            z_jog_enable = 1;
+            break;
+        default:
+            x_jog_enable = 0;
+            y_jog_enable = 0;
+            z_jog_enable = 0;
+            break;
+        }
+    }
+}
+
+void init();
+void update();
+void deinit();
+
+void user_mainloop(void) {
+    printf("user_mainloop()\n");
+    init();
+
+    while(1) {
+        usleep(1000);
+        update();
+    }
+}
