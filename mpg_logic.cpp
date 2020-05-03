@@ -20,14 +20,46 @@ extern "C" {
     int hal_machine_is_on();
     void hal_zero_offset(float);
     void hal_zero_axis(int);
-    void hal_jog_counts(float);
+    void hal_jog_counts(int);
     void hal_jog_scale(float);
     void hal_jog_enable_axis(int);
     float hal_axis_cmd_pos(unsigned int);
+    void hal_feed_override_counts(int i);
+    void hal_feed_override_count_enable(int i);
+    float hal_feed_override_value();
 }
 
+template<typename T, T t>
+class State {
+public:
+    void update(T state) {
+        if(state == m_state) {
+            m_falling = t;
+            m_rising = t;
+            return;
+        }
+
+        m_falling = m_state;
+        m_previous = m_state;
+        m_rising = state;
+        m_state = state;
+    }
+
+    T state() const { return m_state; }
+    T rising() const { return m_rising; }
+    T falling() const { return m_falling; }
+    T previous() const { return m_previous; }
+
+private:
+    T m_state = t;
+    T m_rising = t;
+    T m_falling = t;
+    T m_previous = t;
+};
+
 struct MPGState {
-    enum class LeftDial : std::uint8_t {
+    enum class LeftDialState {
+        UNDEFINED = 0,
         STEP = 1,
         VELOCITY = 2,
         CONTINUOUS = 3,
@@ -37,7 +69,8 @@ struct MPGState {
         OFF = 7
     };
 
-    enum class RightDial : std::uint8_t {
+    enum class RightDialState {
+        UNDEFINED = 0,
         X_F1 = 1,
         Y_F2 = 2,
         Z_F3 = 3,
@@ -60,8 +93,8 @@ struct MPGState {
 
     std::uint8_t wheel;
     std::uint8_t wheel_previous;
-    LeftDial left_dial;
-    RightDial right_dial;
+    State<LeftDialState, LeftDialState::UNDEFINED> left_dial;
+    State<RightDialState, RightDialState::UNDEFINED> right_dial;
     Button button;
     EStop estop;
     bool off;
@@ -74,8 +107,8 @@ struct MPGState {
 
     void update(std::array<std::uint8_t, 8> &data) {
         wheel = data[0];
-        left_dial = LeftDial(data[3] & 0b111);
-        right_dial = RightDial(data[2] & 0b111);
+        left_dial.update(LeftDialState(data[3] & 0b111));
+        right_dial.update(RightDialState(data[2] & 0b111));
         button = Button((data[2] >> 6) & 0b11);
         estop = EStop((data[2] >> 5) & 0b1);
         off = (data[2] >> 4) & 0b1;
@@ -84,7 +117,7 @@ struct MPGState {
         counter3 = data[5];
 
         if(off) {
-            left_dial = LeftDial::OFF;
+            left_dial.update(LeftDialState::OFF);
         }
 
         if(!initialized) {
@@ -99,60 +132,67 @@ struct MPGState {
     }
 };
 
-struct MPGLogic {
-    enum class Axis : unsigned int {
-        NONE = 0,
+class MPGLogic {
+public:
+    enum class AxisId {
         X = 1,
         Y = 2,
-        Z = 3,
-        LAST
+        Z = 3
     };
 
-    MPGState mpgState;
-    Axis axis = Axis::NONE;
-    Axis prev_axis = axis;
-    float offsets[(std::size_t)Axis::LAST] = {0};
-    std::array<char, 20> screen;
-    std::uint8_t screen_seq;
-    char str[9];
-    int coord_sys;
-    const char *coord_systems[10] = {"G53 0", "G54 1", "G55 2", "G56 3", "G57 4", "G58 5", "G59 6", "G59.1 7", "G59.2 8", "G59.3 9"};
+    struct axis_t {
+        char name;
+        AxisId id;
+        float offset;
+    };
 
-    char getAxis() {
-        switch(axis) {
-        case Axis::X:
-            return 'X';
-        case Axis::Y:
-            return 'Y';
-        case Axis::Z:
-            return 'Z';
-        }
+private:
+    axis_t m_xAxis{'X', AxisId::X, 0.0f};
+    axis_t m_yAxis{'Y', AxisId::Y, 0.0f};
+    axis_t m_zAxis{'Z', AxisId::Z, 0.0f};
+    
+    std::array<char, 20> m_screen;
+    std::uint8_t m_screenSeq;
+    char m_str[9];
+    int m_coordSys;
+    const char *m_coordSystems[10] = {"??? 0", "G54 1", "G55 2", "G56 3", "G57 4", "G58 5", "G59 6", "G59.1 7", "G59.2 8", "G59.3 9"};
 
-        return 0;
-    }
+public:
+    const auto &screen() { return m_screen; }
 
-    void update(std::array<std::uint8_t, 8> &data, int coord_sys) {
-        mpgState.update(data);
+    void update(const MPGState &mpgState, int coord_sys) {
         float step_size = (mpgState.button == MPGState::Button::RELEASED) ? 0.001f : 0.01f;
-        axis = Axis::NONE;
-        Axis enable_axis = Axis::NONE;
-        Axis zero_axis = Axis::NONE;
+        axis_t *axis = nullptr;
+        bool enable_jog = false;
+        bool zero = false;
         bool on = true;
 
-        screen.fill(' ');
-        screen[17] = screen_seq++;
-        screen[18] = '\0';
-        screen[19] = '\0';
+        m_screen.fill(' ');
+        m_screen[17] = m_screenSeq++;
+        m_screen[18] = '\0';
+        m_screen[19] = '\0';
 
-        switch(mpgState.right_dial) {
-            case MPGState::RightDial::X_F1:
-                axis = Axis::X;
+        switch(mpgState.right_dial.falling()) {
+            case MPGState::RightDialState::X_F1:
+                m_xAxis.offset = 0.0f;
                 break; 
-            case MPGState::RightDial::Y_F2:
-                axis = Axis::Y;
+            case MPGState::RightDialState::Y_F2:
+                m_yAxis.offset = 0.0f;
                 break; 
-            case MPGState::RightDial::Z_F3:
-                axis = Axis::Z;
+            case MPGState::RightDialState::Z_F3:
+                m_zAxis.offset = 0.0f;
+                break;
+        }
+
+        switch(mpgState.right_dial.state()) {
+            case MPGState::RightDialState::X_F1:
+                axis = &m_xAxis;
+                break; 
+            case MPGState::RightDialState::Y_F2:
+                axis = &m_yAxis;
+                break; 
+            case MPGState::RightDialState::Z_F3:
+                axis = &m_zAxis;
                 break;
         }
 
@@ -164,59 +204,75 @@ struct MPGLogic {
 
         if(hal_estop_is_activated()) {
             on = false;
-            axis = Axis::NONE;
+            axis = nullptr;
             const char *estop = "E-Stop  Active";
-            std::memcpy(screen.data(), estop, std::strlen(estop));
+            std::memcpy(m_screen.data(), estop, std::strlen(estop));
         }
 
         if(!hal_machine_is_on() && !hal_estop_is_activated()) {
             on = false;
-            axis = Axis::NONE;
+            axis = nullptr;
             const char *off = "Machine Off";
-            std::memcpy(screen.data(), off, std::strlen(off));
+            std::memcpy(m_screen.data(), off, std::strlen(off));
         }
 
-        if(axis != Axis::NONE) {
-            int size = snprintf(str, sizeof(str), "%+7.03f", hal_axis_cmd_pos(static_cast<unsigned int>(axis)));
-            std::memcpy(screen.data() + 1, str, size);
-            screen[0] = getAxis();
+        if(mpgState.left_dial.state() != MPGState::LeftDialState::STEP && mpgState.left_dial.state() != MPGState::LeftDialState::ZERO) {
+            axis = nullptr;
+        }
 
-            if(mpgState.left_dial == MPGState::LeftDial::STEP) {
-                enable_axis = axis;
-            } else if(mpgState.left_dial == MPGState::LeftDial::ZERO) {
-                offsets[(std::size_t)axis] += mpgState.ticks * step_size;
-                hal_zero_offset(offsets[(std::size_t)axis]);
+        int halAxisId = (axis) ? static_cast<int>(axis->id) : 0;
+
+        if(axis) {
+            int size = snprintf(m_str, sizeof(m_str), "%+7.03f", hal_axis_cmd_pos(halAxisId));
+            std::memcpy(m_screen.data() + 1, m_str, size);
+            m_screen[0] = axis->name;
+
+            if(mpgState.left_dial.state() == MPGState::LeftDialState::STEP) {
+                enable_jog = true;
+            } else if(mpgState.left_dial.state() == MPGState::LeftDialState::ZERO) {
+                axis->offset += mpgState.ticks * step_size;
+                hal_zero_offset(axis->offset);
 
                 if(mpgState.button == MPGState::Button::DOUBLE_PRESSED) {
-                    zero_axis = axis;
+                    zero = true;
                 }
 
-                int size = snprintf(str, sizeof(str), "%+7.03f", offsets[(std::size_t)axis]);
-                std::memcpy(screen.data() + 9, str, size);
+                int size = snprintf(m_str, sizeof(m_str), "%+7.03f", axis->offset);
+                std::memcpy(m_screen.data() + 9, m_str, size);
             }
         }
 
         if(coord_sys != 0) {
-            MPGLogic::coord_sys = coord_sys;
+            m_coordSys = coord_sys;
         }
 
         if(on) {
-            if(mpgState.left_dial == MPGState::LeftDial::ZERO) {
-                screen[8] = '0' + MPGLogic::coord_sys;
+            if(mpgState.left_dial.state() == MPGState::LeftDialState::ZERO) {
+                m_screen[8] = '0' + m_coordSys;
             } else {
-                std::memcpy(screen.data() + 8, coord_systems[MPGLogic::coord_sys], strlen(coord_systems[MPGLogic::coord_sys]));
+                std::memcpy(m_screen.data() + 8, m_coordSystems[m_coordSys], strlen(m_coordSystems[m_coordSys]));
             }
         }
 
-        hal_zero_axis((unsigned int)zero_axis);
-        hal_jog_enable_axis((unsigned int)enable_axis);
+        if(mpgState.left_dial.state() == MPGState::LeftDialState::SPEED) {
+            hal_feed_override_count_enable(1);
+            int size = snprintf(m_str, sizeof(m_str), "F %5.01f%%", hal_feed_override_value() * 100.0f);
+            std::memcpy(m_screen.data(), m_str, size);
+        } else {
+            hal_feed_override_count_enable(0);
+        }
+
+        hal_zero_axis((zero) ? halAxisId : 0);
+        hal_jog_enable_axis((enable_jog) ? halAxisId : 0);
         hal_jog_counts(mpgState.tick_pos);
+        hal_feed_override_counts(mpgState.tick_pos);
         hal_jog_scale(step_size);
     }
 };
 
 static libusb_context *ctx = nullptr;
 static libusb_device_handle *handle = nullptr;
+static MPGState mpgState;
 static MPGLogic mpgLogic;
 
 extern "C" {
@@ -249,7 +305,8 @@ extern "C" {
         std::array<std::uint8_t, 8> buf;
         int actual;
         libusb_interrupt_transfer(handle, 0x81, buf.data(), buf.size(), &actual, 0);
-        mpgLogic.update(buf, coord_sys);
-        libusb_interrupt_transfer(handle, 0x01, (unsigned char *)mpgLogic.screen.data(), mpgLogic.screen.size(), &actual, 0);
+        mpgState.update(buf);
+        mpgLogic.update(mpgState, coord_sys);
+        libusb_interrupt_transfer(handle, 0x01, (unsigned char *)mpgLogic.screen().data(), mpgLogic.screen().size(), &actual, 0);
     }
 }
