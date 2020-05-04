@@ -2,3 +2,10 @@
 mpg_p2s.c
 mpg_p2s
 .vscode
+*.cflags
+*.config
+*.creator
+*.creator.user
+*.cxxflags
+*.files
+*.includes

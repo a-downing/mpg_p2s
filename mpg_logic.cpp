@@ -10,8 +10,11 @@
 #include <unistd.h>
 
 #include <libusb-1.0/libusb.h>
+
 #include <linuxcnc/emc.hh>
 #include <linuxcnc/emc_nml.hh>
+#undef ON
+#undef OFF
 
 extern "C" {
     void hal_estop_activate();
@@ -126,10 +129,19 @@ struct MPGState {
             return;
         }
 
-        ticks = wheel - wheel_previous;
+        ticks = static_cast<std::int8_t>(wheel - wheel_previous);
         tick_pos += ticks;
         wheel_previous = wheel;
     }
+};
+
+enum class MPGLogicState {
+    UNDEFINED,
+    ESTOP,
+    MACHINE_OFF,
+    STEP,
+    ZERO,
+    FO_SPEED
 };
 
 class MPGLogic {
@@ -147,126 +159,109 @@ public:
     };
 
 private:
+    State<MPGLogicState, MPGLogicState::UNDEFINED> m_state;
     axis_t m_xAxis{'X', AxisId::X, 0.0f};
     axis_t m_yAxis{'Y', AxisId::Y, 0.0f};
     axis_t m_zAxis{'Z', AxisId::Z, 0.0f};
-    
-    std::array<char, 20> m_screen;
-    std::uint8_t m_screenSeq;
-    char m_str[9];
-    int m_coordSys;
-    const char *m_coordSystems[10] = {"??? 0", "G54 1", "G55 2", "G56 3", "G57 4", "G58 5", "G59 6", "G59.1 7", "G59.2 8", "G59.3 9"};
+    axis_t *m_axis = nullptr;
+    bool m_estop = false;
+    bool m_machineOn = true;
+    bool m_enableJog = false;
+    bool m_enableZero = false;
+    bool m_showZero = false;
+    bool m_enableFeedOverride = false;
+    float m_tickScale = 0.0f;
 
 public:
-    const auto &screen() { return m_screen; }
+    const axis_t *axis() const { return m_axis; }
+    bool estop() const { return m_estop; }
+    bool machineOn() const { return m_machineOn; }
+    bool enableJog() const { return m_enableJog; }
+    bool enableZero() const { return m_enableZero; }
+    bool showZero() const { return m_showZero; }
+    bool enableFeedOverride() const { return m_enableFeedOverride; }
+    float tickScale() const { return m_tickScale; }
 
-    void update(const MPGState &mpgState, int coord_sys) {
-        float step_size = (mpgState.button == MPGState::Button::RELEASED) ? 0.001f : 0.01f;
-        axis_t *axis = nullptr;
-        bool enable_jog = false;
-        bool zero = false;
-        bool on = true;
+    void update(const MPGState &mpgState) {
+        m_axis = nullptr;
+        MPGLogicState state = MPGLogicState::UNDEFINED;
 
-        m_screen.fill(' ');
-        m_screen[17] = m_screenSeq++;
-        m_screen[18] = '\0';
-        m_screen[19] = '\0';
+        if(hal_estop_is_activated()) {
+            state = MPGLogicState::ESTOP;
+        } else if(!hal_machine_is_on()) {
+            state = MPGLogicState::MACHINE_OFF;
+        } else if(mpgState.left_dial.state() == MPGState::LeftDialState::STEP) {
+            switch(mpgState.right_dial.state()) {
+            case MPGState::RightDialState::X_F1:
+                state = MPGLogicState::STEP;
+                m_axis = &m_xAxis;
+                break; 
+            case MPGState::RightDialState::Y_F2:
+                state = MPGLogicState::STEP;
+                m_axis = &m_yAxis;
+                break; 
+            case MPGState::RightDialState::Z_F3:
+                state = MPGLogicState::STEP;
+                m_axis = &m_zAxis;
+                break;
+            }
+        } else if(mpgState.left_dial.state() == MPGState::LeftDialState::ZERO) {
+            switch(mpgState.right_dial.state()) {
+            case MPGState::RightDialState::X_F1:
+                state = MPGLogicState::ZERO;
+                m_axis = &m_xAxis;
+                break; 
+            case MPGState::RightDialState::Y_F2:
+                state = MPGLogicState::ZERO;
+                m_axis = &m_yAxis;
+                break; 
+            case MPGState::RightDialState::Z_F3:
+                state = MPGLogicState::ZERO;
+                m_axis = &m_zAxis;
+                break;
+            }
+        } else if(mpgState.left_dial.state() == MPGState::LeftDialState::SPEED) {
+            state = MPGLogicState::FO_SPEED;
+        }
+
+        m_state.update(state);
 
         switch(mpgState.right_dial.falling()) {
             case MPGState::RightDialState::X_F1:
-                m_xAxis.offset = 0.0f;
-                break; 
             case MPGState::RightDialState::Y_F2:
-                m_yAxis.offset = 0.0f;
-                break; 
             case MPGState::RightDialState::Z_F3:
+                m_xAxis.offset = 0.0f;
+                m_yAxis.offset = 0.0f;
                 m_zAxis.offset = 0.0f;
                 break;
         }
 
-        switch(mpgState.right_dial.state()) {
-            case MPGState::RightDialState::X_F1:
-                axis = &m_xAxis;
-                break; 
-            case MPGState::RightDialState::Y_F2:
-                axis = &m_yAxis;
-                break; 
-            case MPGState::RightDialState::Z_F3:
-                axis = &m_zAxis;
-                break;
-        }
+        m_estop = false;
+        m_machineOn = true;
+        m_enableJog = false;
+        m_enableZero = false;
+        m_showZero = false;
+        m_enableFeedOverride = false;
+        m_tickScale = (mpgState.button == MPGState::Button::RELEASED) ? 0.001f : 0.01f;
 
-        if(mpgState.estop == MPGState::EStop::ACTIVATED) {
-            hal_estop_activate();
-        } else {
-            hal_estop_reset();
-        }
 
-        if(hal_estop_is_activated()) {
-            on = false;
-            axis = nullptr;
-            const char *estop = "E-Stop  Active";
-            std::memcpy(m_screen.data(), estop, std::strlen(estop));
-        }
+        if(m_state.state() == MPGLogicState::ESTOP) {
+            m_estop = true;
+            m_machineOn = false;
+        } else if(m_state.state() == MPGLogicState::MACHINE_OFF) {
+            m_machineOn = false;
+        } else if(m_state.state() == MPGLogicState::STEP) {
+            m_enableJog = true;
+        } else if(m_state.state() == MPGLogicState::ZERO) {
+            m_axis->offset += mpgState.ticks * m_tickScale;
+            m_showZero = true;
 
-        if(!hal_machine_is_on() && !hal_estop_is_activated()) {
-            on = false;
-            axis = nullptr;
-            const char *off = "Machine Off";
-            std::memcpy(m_screen.data(), off, std::strlen(off));
-        }
-
-        if(mpgState.left_dial.state() != MPGState::LeftDialState::STEP && mpgState.left_dial.state() != MPGState::LeftDialState::ZERO) {
-            axis = nullptr;
-        }
-
-        int halAxisId = (axis) ? static_cast<int>(axis->id) : 0;
-
-        if(axis) {
-            int size = snprintf(m_str, sizeof(m_str), "%+7.03f", hal_axis_cmd_pos(halAxisId));
-            std::memcpy(m_screen.data() + 1, m_str, size);
-            m_screen[0] = axis->name;
-
-            if(mpgState.left_dial.state() == MPGState::LeftDialState::STEP) {
-                enable_jog = true;
-            } else if(mpgState.left_dial.state() == MPGState::LeftDialState::ZERO) {
-                axis->offset += mpgState.ticks * step_size;
-                hal_zero_offset(axis->offset);
-
-                if(mpgState.button == MPGState::Button::DOUBLE_PRESSED) {
-                    zero = true;
-                }
-
-                int size = snprintf(m_str, sizeof(m_str), "%+7.03f", axis->offset);
-                std::memcpy(m_screen.data() + 9, m_str, size);
+            if(mpgState.button == MPGState::Button::DOUBLE_PRESSED) {
+                m_enableZero = true;
             }
+        } if(m_state.state() == MPGLogicState::FO_SPEED) {
+            m_enableFeedOverride = true;
         }
-
-        if(coord_sys != 0) {
-            m_coordSys = coord_sys;
-        }
-
-        if(on) {
-            if(mpgState.left_dial.state() == MPGState::LeftDialState::ZERO) {
-                m_screen[8] = '0' + m_coordSys;
-            } else {
-                std::memcpy(m_screen.data() + 8, m_coordSystems[m_coordSys], strlen(m_coordSystems[m_coordSys]));
-            }
-        }
-
-        if(mpgState.left_dial.state() == MPGState::LeftDialState::SPEED) {
-            hal_feed_override_count_enable(1);
-            int size = snprintf(m_str, sizeof(m_str), "F %5.01f%%", hal_feed_override_value() * 100.0f);
-            std::memcpy(m_screen.data(), m_str, size);
-        } else {
-            hal_feed_override_count_enable(0);
-        }
-
-        hal_zero_axis((zero) ? halAxisId : 0);
-        hal_jog_enable_axis((enable_jog) ? halAxisId : 0);
-        hal_jog_counts(mpgState.tick_pos);
-        hal_feed_override_counts(mpgState.tick_pos);
-        hal_jog_scale(step_size);
     }
 };
 
@@ -277,8 +272,20 @@ static MPGLogic mpgLogic;
 
 extern "C" {
     void init() {
-        libusb_init(&ctx);
+        int success = libusb_init(&ctx);
+
+        if(success != 0) {
+            std::fprintf(stderr, "libusb_init failed\n");
+            exit(1);
+        }
+
         handle = libusb_open_device_with_vid_pid(ctx, 0x04d8, 0xfce2);
+
+        if(!handle) {
+            std::fprintf(stderr, "libusb_open_device_with_vid_pid failed\n");
+            exit(1);
+        }
+
         libusb_detach_kernel_driver(handle, 0);
         libusb_claim_interface(handle, 0);
     }
@@ -288,17 +295,22 @@ extern "C" {
     }
 }
 
-const char *nmlfile = "/usr/share/linuxcnc/linuxcnc.nml";
-RCS_STAT_CHANNEL *stat = new RCS_STAT_CHANNEL(emcFormat, "emcStatus", "xemc", nmlfile);
+static const char *nmlfile = "/usr/share/linuxcnc/linuxcnc.nml";
+static RCS_STAT_CHANNEL *stat = new RCS_STAT_CHANNEL(emcFormat, "emcStatus", "xemc", nmlfile);
+static unsigned char screen[20];
+static std::uint8_t screen_seq = 0;
+static int coord_sys = 0;
 
 extern "C" {
     void update() {
-        int coord_sys = 0;
 
         if(stat->valid()) {
             if(stat->peek() == EMC_STAT_TYPE) {
                 EMC_STAT *emcStatus = static_cast<EMC_STAT*>(stat->get_address());
-                coord_sys = emcStatus->task.g5x_index;
+
+                if(emcStatus->task.g5x_index != 0) {
+                    coord_sys = emcStatus->task.g5x_index;
+                }
             }
         }
 
@@ -306,7 +318,59 @@ extern "C" {
         int actual;
         libusb_interrupt_transfer(handle, 0x81, buf.data(), buf.size(), &actual, 0);
         mpgState.update(buf);
-        mpgLogic.update(mpgState, coord_sys);
-        libusb_interrupt_transfer(handle, 0x01, (unsigned char *)mpgLogic.screen().data(), mpgLogic.screen().size(), &actual, 0);
+        mpgLogic.update(mpgState);
+
+        char str[sizeof(screen) + 1];
+        int axisId = 0;
+
+        std::memset(screen, ' ', sizeof(screen));
+
+        if(mpgLogic.axis()) {
+            switch(mpgLogic.axis()->id) {
+            case MPGLogic::AxisId::X:
+                axisId = 1;
+                break;
+            case MPGLogic::AxisId::Y:
+                axisId = 2;
+                break;
+            case MPGLogic::AxisId::Z:
+                axisId = 3;
+                break;
+            }
+
+            int size = std::sprintf(str, "%c%+7.3f", mpgLogic.axis()->name, hal_axis_cmd_pos(axisId));
+            std::memcpy(screen, str, size);
+        }
+
+        if(mpgLogic.estop()) {
+            const char *estop = "EStop   Active";
+            std::memcpy(screen, estop, strlen(estop));
+        } else if(!mpgLogic.machineOn()) {
+            const char *off = "Machine Off";
+            std::memcpy(screen, off, strlen(off));
+        }
+
+        if(mpgLogic.showZero()) {
+            int size = std::sprintf(str, "%d %+6.3f", coord_sys, mpgLogic.axis()->offset);
+            std::memcpy(screen + 8, str, size);
+        }
+
+        if(mpgLogic.enableFeedOverride()) {
+            int size = std::sprintf(str, "F%6.1f%%", hal_feed_override_value() * 100.0f);
+            std::memcpy(screen, str, size);
+        }
+
+        screen[17] = screen_seq++;
+        screen[18] = 0;
+        screen[19] = 0;
+        libusb_interrupt_transfer(handle, 0x01, screen, sizeof(screen), &actual, 0);
+
+        hal_zero_offset((mpgLogic.axis()) ? mpgLogic.axis()->offset : 0.0f);
+        hal_zero_axis((mpgLogic.enableZero()) ? axisId : 0);
+        hal_jog_enable_axis((mpgLogic.enableJog()) ? axisId : 0);
+        hal_jog_counts(mpgState.tick_pos);
+        hal_feed_override_counts(mpgState.tick_pos);
+        hal_feed_override_count_enable(mpgLogic.enableFeedOverride());
+        hal_jog_scale(mpgLogic.tickScale());
     }
 }
