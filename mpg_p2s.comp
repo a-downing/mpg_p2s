@@ -36,43 +36,43 @@ license "GPL"; // indicates GPL v2 or later
 
 struct __comp_state *__comp_inst = NULL;
 
-void hal_feed_override_counts(int i) {
+void mpg_feed_override_counts(int i) {
     feed_override_counts = i;
 }
 
-void hal_feed_override_count_enable(int i) {
+void mpg_feed_override_count_enable(int i) {
     feed_override_count_enable = i;
 }
 
-float hal_feed_override_value() {
+float mpg_feed_override_value() {
     return feed_override_value;
 }
 
-void hal_estop_activate() {
+void mpg_estop_activate() {
     estop_activate = 1;
     estop_reset = 0;
 }
 
-void hal_estop_reset() {
+void mpg_estop_reset() {
     if(estop_activate != 0) {
         estop_activate = 0;
         estop_reset = 1;
     }
 }
 
-int hal_estop_is_activated() {
+int mpg_estop_is_activated() {
     return estop_is_activated;
 }
 
-int hal_machine_is_on() {
+int mpg_machine_is_on() {
     return machine_is_on;
 }
 
-void hal_zero_offset(float f) {
+void mpg_zero_offset(float f) {
     zero_offset = f;
 }
 
-void hal_zero_axis(int i) {
+void mpg_zero_axis(int i) {
     switch(i) {
     case 1:
         zero_x_axis = 1;
@@ -97,7 +97,7 @@ void hal_zero_axis(int i) {
     }
 }
 
-float hal_axis_cmd_pos(unsigned int i) {
+float mpg_axis_cmd_pos(int i) {
     switch(i) {
     case 1:
         return x_cmd_pos;
@@ -110,15 +110,15 @@ float hal_axis_cmd_pos(unsigned int i) {
     }
 }
 
-void hal_jog_counts(int i) {
+void mpg_jog_counts(int i) {
     jog_counts = i;
 }
 
-void hal_jog_scale(float f) {
+void mpg_jog_scale(float f) {
     jog_scale = f;
 }
 
-void hal_jog_enable_axis(int i) {
+void mpg_jog_enable_axis(int i) {
     switch(i) {
     case 1:
         x_jog_enable = 1;

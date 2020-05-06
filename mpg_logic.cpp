@@ -1,5 +1,4 @@
 #include <array>
-#include <fstream>
 #include <vector>
 
 #include <cctype>
@@ -7,29 +6,27 @@
 #include <cstdio>
 #include <cstdint>
 
-#include <unistd.h>
-
 #include <libusb-1.0/libusb.h>
-
 #include <linuxcnc/emc.hh>
 #include <linuxcnc/emc_nml.hh>
+
 #undef ON
 #undef OFF
 
 extern "C" {
-    void hal_estop_activate();
-    void hal_estop_reset();
-    int hal_estop_is_activated();
-    int hal_machine_is_on();
-    void hal_zero_offset(float);
-    void hal_zero_axis(int);
-    void hal_jog_counts(int);
-    void hal_jog_scale(float);
-    void hal_jog_enable_axis(int);
-    float hal_axis_cmd_pos(unsigned int);
-    void hal_feed_override_counts(int i);
-    void hal_feed_override_count_enable(int i);
-    float hal_feed_override_value();
+    void mpg_estop_activate();
+    void mpg_estop_reset();
+    int mpg_estop_is_activated();
+    int mpg_machine_is_on();
+    void mpg_zero_offset(float);
+    void mpg_zero_axis(int);
+    void mpg_jog_counts(int);
+    void mpg_jog_scale(float);
+    void mpg_jog_enable_axis(int);
+    float mpg_axis_cmd_pos(int);
+    void mpg_feed_override_counts(int);
+    void mpg_feed_override_count_enable(int);
+    float mpg_feed_override_value();
 }
 
 template<typename T, T t>
@@ -186,20 +183,20 @@ public:
         m_axis = nullptr;
         MPGLogicState state = MPGLogicState::UNDEFINED;
 
-        if(hal_estop_is_activated()) {
+        if(mpg_estop_is_activated()) {
             state = MPGLogicState::ESTOP;
-        } else if(!hal_machine_is_on()) {
+        } else if(!mpg_machine_is_on()) {
             state = MPGLogicState::MACHINE_OFF;
         } else if(mpgState.left_dial.state() == MPGState::LeftDialState::STEP) {
             switch(mpgState.right_dial.state()) {
             case MPGState::RightDialState::X_F1:
                 state = MPGLogicState::STEP;
                 m_axis = &m_xAxis;
-                break; 
+                break;
             case MPGState::RightDialState::Y_F2:
                 state = MPGLogicState::STEP;
                 m_axis = &m_yAxis;
-                break; 
+                break;
             case MPGState::RightDialState::Z_F3:
                 state = MPGLogicState::STEP;
                 m_axis = &m_zAxis;
@@ -210,11 +207,11 @@ public:
             case MPGState::RightDialState::X_F1:
                 state = MPGLogicState::ZERO;
                 m_axis = &m_xAxis;
-                break; 
+                break;
             case MPGState::RightDialState::Y_F2:
                 state = MPGLogicState::ZERO;
                 m_axis = &m_yAxis;
-                break; 
+                break;
             case MPGState::RightDialState::Z_F3:
                 state = MPGLogicState::ZERO;
                 m_axis = &m_zAxis;
@@ -297,7 +294,7 @@ extern "C" {
 
 static const char *nmlfile = "/usr/share/linuxcnc/linuxcnc.nml";
 static RCS_STAT_CHANNEL *stat = new RCS_STAT_CHANNEL(emcFormat, "emcStatus", "xemc", nmlfile);
-static unsigned char screen[20];
+static std::array<unsigned char, 20> screen;
 static std::uint8_t screen_seq = 0;
 static int coord_sys = 0;
 
@@ -323,7 +320,7 @@ extern "C" {
         char str[sizeof(screen) + 1];
         int axisId = 0;
 
-        std::memset(screen, ' ', sizeof(screen));
+        std::memset(screen.data(), ' ', sizeof(screen));
 
         if(mpgLogic.axis()) {
             switch(mpgLogic.axis()->id) {
@@ -338,39 +335,39 @@ extern "C" {
                 break;
             }
 
-            int size = std::sprintf(str, "%c%+7.3f", mpgLogic.axis()->name, hal_axis_cmd_pos(axisId));
-            std::memcpy(screen, str, size);
+            int size = std::sprintf(str, "%c%+7.3f", mpgLogic.axis()->name, mpg_axis_cmd_pos(axisId));
+            std::memcpy(screen.data(), str, size);
         }
 
         if(mpgLogic.estop()) {
             const char *estop = "EStop   Active";
-            std::memcpy(screen, estop, strlen(estop));
+            std::memcpy(screen.data(), estop, strlen(estop));
         } else if(!mpgLogic.machineOn()) {
             const char *off = "Machine Off";
-            std::memcpy(screen, off, strlen(off));
+            std::memcpy(screen.data(), off, strlen(off));
         }
 
         if(mpgLogic.showZero()) {
             int size = std::sprintf(str, "%d %+6.3f", coord_sys, mpgLogic.axis()->offset);
-            std::memcpy(screen + 8, str, size);
+            std::memcpy(screen.data() + 8, str, size);
         }
 
         if(mpgLogic.enableFeedOverride()) {
-            int size = std::sprintf(str, "F%6.1f%%", hal_feed_override_value() * 100.0f);
-            std::memcpy(screen, str, size);
+            int size = std::sprintf(str, "F%6.1f%%", mpg_feed_override_value() * 100.0f);
+            std::memcpy(screen.data(), str, size);
         }
 
         screen[17] = screen_seq++;
         screen[18] = 0;
         screen[19] = 0;
-        libusb_interrupt_transfer(handle, 0x01, screen, sizeof(screen), &actual, 0);
+        libusb_interrupt_transfer(handle, 0x01, screen.data(), sizeof(screen), &actual, 0);
 
-        hal_zero_offset((mpgLogic.axis()) ? mpgLogic.axis()->offset : 0.0f);
-        hal_zero_axis((mpgLogic.enableZero()) ? axisId : 0);
-        hal_jog_enable_axis((mpgLogic.enableJog()) ? axisId : 0);
-        hal_jog_counts(mpgState.tick_pos);
-        hal_feed_override_counts(mpgState.tick_pos);
-        hal_feed_override_count_enable(mpgLogic.enableFeedOverride());
-        hal_jog_scale(mpgLogic.tickScale());
+        mpg_zero_offset((mpgLogic.axis()) ? mpgLogic.axis()->offset : 0.0f);
+        mpg_zero_axis((mpgLogic.enableZero()) ? axisId : 0);
+        mpg_jog_enable_axis((mpgLogic.enableJog()) ? axisId : 0);
+        mpg_jog_counts(mpgState.tick_pos);
+        mpg_feed_override_counts(mpgState.tick_pos);
+        mpg_feed_override_count_enable(mpgLogic.enableFeedOverride());
+        mpg_jog_scale(mpgLogic.tickScale());
     }
 }

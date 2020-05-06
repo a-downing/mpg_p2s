@@ -5,7 +5,7 @@ mpg_p2s
 *.cflags
 *.config
 *.creator
-*.creator.user
+*.creator.*
 *.cxxflags
 *.files
 *.includes
